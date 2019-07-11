@@ -49,6 +49,7 @@ use stegos_crypto::pbc::VRF;
 use stegos_crypto::scc::{Fr, Pt, PublicKey, SecretKey};
 use stegos_crypto::{pbc, scc};
 use stegos_serialization::traits::ProtoConvert;
+use vdf::{self, VDFParams, VDF};
 
 pub type ViewCounter = u32;
 pub type ValidatorId = u32;
@@ -166,6 +167,10 @@ pub struct Blockchain {
     balance: BalanceMap,
     /// In-memory storage of stakes.
     escrow: Escrow,
+    /// VDF state.
+    pub(crate) vdf: vdf::PietrzakVDF,
+    /// VDF difficulty,
+    difficulty: u64,
 
     //
     // Epoch Information.
@@ -226,6 +231,8 @@ impl Blockchain {
         };
         balance.insert(INITIAL_LSN, (), initial_balance);
         let escrow = Escrow::new();
+        let vdf = vdf::PietrzakVDFParams(2048).new();
+        let difficulty = 10000u64;
 
         //
         // Epoch Information.
@@ -253,6 +260,8 @@ impl Blockchain {
             output_by_hash,
             balance,
             escrow,
+            vdf,
+            difficulty,
             epoch,
             offset,
             election_result,
@@ -598,6 +607,23 @@ impl Blockchain {
         self.election_result().random.rand
     }
 
+    /// Return current difficulty.
+    #[inline]
+    pub fn difficulty(&self) -> u64 {
+        self.difficulty
+    }
+
+    /// Return Verifiable Delay Function.
+    pub fn vdf_solver(&self) -> impl Fn() -> Vec<u8> {
+        let challenge = self.last_random().to_bytes();
+        let vdf = self.vdf.clone();
+        let difficulty = self.difficulty;
+        move || {
+            vdf.solve(&challenge, difficulty)
+                .expect("complexity is valid")
+        }
+    }
+
     /// A shortcut for self.escrow.validate_stakes().
     #[inline]
     pub fn validate_stakes<'a, OutputIter>(
@@ -850,6 +876,8 @@ impl Blockchain {
         let previous = self.last_macro_block_hash();
         let seed = mix(self.last_macro_block_random(), view_change);
         let random = pbc::make_VRF(network_skey, &seed);
+        // Sic: difficulty is constant.
+        let difficulty = self.difficulty();
 
         let mut transactions: Vec<Transaction> = Vec::new();
 
@@ -925,6 +953,7 @@ impl Blockchain {
             view_change,
             network_pkey,
             random,
+            difficulty,
             timestamp,
             full_reward,
             activity_map,
@@ -1098,6 +1127,8 @@ impl Blockchain {
                 self.cfg.max_slot_count,
             ),
         );
+        self.difficulty = block.header.difficulty;
+        debug!("Set difficulty to to {}", self.difficulty);
         metrics::EPOCH.inc();
         metrics::OFFSET.set(0);
 
@@ -1550,6 +1581,7 @@ pub mod tests {
 
     use crate::test;
     use crate::timestamp::Timestamp;
+    use rand::Rng;
     use simple_logger;
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -1624,6 +1656,7 @@ pub mod tests {
 
         simple_logger::init_with_level(log::Level::Debug).unwrap_or_default();
 
+        let mut rng = rand::thread_rng();
         let mut cfg: ChainConfig = Default::default();
         cfg.stake_epochs = STAKE_EPOCHS;
         cfg.micro_blocks_in_epoch = 2;
@@ -1650,7 +1683,7 @@ pub mod tests {
             //
             // Non-empty block.
             //
-            timestamp += Duration::from_millis(1);
+            timestamp += Duration::from_secs(rng.gen_range(5, 10));
             let (block, input_hashes, output_hashes) =
                 test::create_fake_micro_block(&mut chain, &keychains, timestamp);
             let hash = Hash::digest(&block);
@@ -1667,25 +1700,27 @@ pub mod tests {
                 assert!(chain.contains_output(&output_hash));
             }
 
-            //
-            // Empty block.
-            //
-            timestamp += Duration::from_millis(1);
-            let block = test::create_micro_block_with_coinbase(&mut chain, &keychains, timestamp);
-            let hash = Hash::digest(&block);
-            let offset = chain.offset();
-            chain
-                .push_micro_block(block, timestamp)
-                .expect("block is valid");
-            assert_eq!(hash, chain.last_block_hash());
-            assert_eq!(offset + 1, chain.offset());
+            for offset in 1..chain.cfg().micro_blocks_in_epoch {
+                //
+                // Empty block.
+                //
+                timestamp += Duration::from_secs(rng.gen_range(5, 10));
+                let block =
+                    test::create_micro_block_with_coinbase(&mut chain, &keychains, timestamp);
+                let hash = Hash::digest(&block);
+                chain
+                    .push_micro_block(block, timestamp)
+                    .expect("block is valid");
+                assert_eq!(hash, chain.last_block_hash());
+                assert_eq!(offset + 1, chain.offset());
+            }
 
             //
             // Macro block.
             //
 
             // Create a macro block.
-            timestamp += Duration::from_millis(1);
+            timestamp += Duration::from_secs(5 + rng.gen_range(0, 10));
             let (block, extra_transactions) =
                 test::create_fake_macro_block(&chain, &keychains, timestamp);
             let hash = Hash::digest(&block);

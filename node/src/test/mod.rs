@@ -57,7 +57,10 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> SandboxConfig {
         SandboxConfig {
-            node: Default::default(),
+            node: NodeConfig {
+                vdf_nonblock: false,
+                ..Default::default()
+            },
             chain: Default::default(),
             num_nodes: 4,
             log_level: Level::Trace,
@@ -751,7 +754,6 @@ where
             break;
         }
         info!("Skipping microlock.");
-        s.wait(s.config.node.tx_wait_timeout);
         s.skip_micro_block()
     }
     assert!(ready, "Not enought micriblocks found");

@@ -100,6 +100,15 @@ pub enum CryptoError {
     InvalidVRFRandomness,
     #[fail(display = "Invalid VRF Source")]
     InvalidVRFSource,
+    #[fail(display = "Invalid VDF Proof")]
+    InvalidVDFProof,
+    #[fail(display = "Invalid VDF complexity: got={}", _0)]
+    InvalidVDFComplexity(u64),
+    #[fail(
+        display = "Unexpected VDF complexity: min={}, max={}, got={}",
+        _0, _1, _2
+    )]
+    UnexpectedVDFComplexity(u64, u64, u64),
 }
 
 impl From<hex::FromHexError> for CryptoError {

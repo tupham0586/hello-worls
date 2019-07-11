@@ -28,8 +28,6 @@ use std::time::Duration;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct NodeConfig {
-    /// How long wait for transactions before starting to create a new block.
-    pub tx_wait_timeout: Duration,
     /// How long wait for micro blocks.
     pub micro_block_timeout: Duration,
     /// How long wait for the keu blocks.
@@ -52,14 +50,16 @@ pub struct NodeConfig {
     pub min_payment_fee: i64,
     /// Minimal fee for the stake transactions.
     pub min_stake_fee: i64,
+    /// Solve VDF puzzle in a background thread.
+    pub vdf_nonblock: bool,
 }
 
 impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
-            tx_wait_timeout: Duration::from_secs(5),
             // Sic: synchronize this value with ChainConfig::vetted_timeout.
             micro_block_timeout: Duration::from_secs(30),
+            // Sic: synchronize this value with ChainConfig::desired_micro_block_interval.
             macro_block_timeout: Duration::from_secs(30),
             max_inputs_in_tx: 1000,
             max_outputs_in_tx: 10,
@@ -70,6 +70,7 @@ impl Default for NodeConfig {
             loader_speed_in_epoch: 100,
             min_payment_fee: 1_000, // 0.001 STG
             min_stake_fee: 0,       // free
+            vdf_nonblock: true,
         }
     }
 }

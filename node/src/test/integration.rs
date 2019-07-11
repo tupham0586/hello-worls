@@ -88,7 +88,6 @@ fn rollback_slashing() {
 
         let second_leader = s.future_view_change_leader(1);
         info!("CREATE BLOCK. LEADER = {}", first_leader);
-        s.wait(s.config.node.tx_wait_timeout);
         s.poll();
 
         // init view_change
@@ -128,7 +127,6 @@ fn rollback_slashing() {
             .for_each(|node| assert_eq!(node.cheating_proofs.len(), 1));
 
         // wait for block;
-        r.wait(r.config.node.tx_wait_timeout);
         r.parts.1.skip_micro_block();
 
         // assert that nodes in partition 1 exclude node from partition 0.
