@@ -44,6 +44,8 @@ pub struct ChainConfig {
     pub service_award_per_epoch: i64,
     /// Maximal delta between block's timestamp and local timestamp.
     pub vetted_timestamp_delta: Duration,
+    /// Desired interval for micro blocks.
+    pub desired_micro_block_interval: Duration,
 }
 
 const STG: i64 = 1_000_000;
@@ -61,6 +63,8 @@ impl Default for ChainConfig {
             service_award_per_epoch: 12 * STG * (micro_blocks_in_epoch as i64 + 1), // 12 STG per block
             // Sic: synchronize this value with NodeConfig::{micro, macro}_block_timeout.
             vetted_timestamp_delta: Duration::from_secs(30),
+            // Sic: must be less than NodeConfig::micro_block_timeout.
+            desired_micro_block_interval: Duration::from_secs(5),
         }
     }
 }

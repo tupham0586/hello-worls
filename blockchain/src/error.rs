@@ -294,6 +294,21 @@ pub enum BlockError {
     )]
     IncorrectRandom(u64, Hash),
     #[fail(
+        display = "Received block with incorrect VDF solution: epoch={}, block={}",
+        _0, _1
+    )]
+    InvalidVDFProof(u64, Hash),
+    #[fail(
+        display = "Received block with invalid VDF complexity: epoch={}, block={}, got={}",
+        _0, _1, _2
+    )]
+    InvalidVDFComplexity(u64, Hash, u64),
+    #[fail(
+        display = "Received block with unexpected VDF complexity: epoch={}, block={}, min={}, max={}, got={}",
+        _0, _1, _2, _3, _4
+    )]
+    UnexpectedVDFComplexity(u64, Hash, u64, u64, u64),
+    #[fail(
         display = "Received block with wrong view_change: epoch={}, block={}, block_view_change={}, our_view_change={}",
         _0, _1, _2, _3
     )]

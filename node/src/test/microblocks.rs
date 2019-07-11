@@ -747,6 +747,10 @@ fn out_of_order_keyblock_proposal() {
             let timestamp = Timestamp::now();
             let seed = mix(last_random, round);
             let random = pbc::make_VRF(&leader_node.node_service.network_skey, &seed);
+            let complexity = leader_node
+                .node_service
+                .chain
+                .vdf_complexity_for_next_epoch();
             let leader = leader_node.node_service.network_pkey;
             let block_reward = 0;
             let activity_map = BitVector::new(0);
@@ -756,6 +760,7 @@ fn out_of_order_keyblock_proposal() {
                 round,
                 leader,
                 random,
+                complexity,
                 timestamp,
                 block_reward,
                 activity_map,
@@ -830,6 +835,7 @@ fn micro_block_without_signature() {
             leader.node_service.chain.view_change(),
         );
         let random = pbc::make_VRF(&leader.node_service.network_skey, &seed);
+        let solution = leader.node_service.chain.vdf_solver()();
         let block = MicroBlock::empty(
             last_block_hash,
             epoch,
@@ -838,6 +844,7 @@ fn micro_block_without_signature() {
             None,
             leader.node_service.network_pkey,
             random,
+            solution,
             timestamp,
         );
         let block: Block = Block::MicroBlock(block);

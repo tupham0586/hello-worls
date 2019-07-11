@@ -480,6 +480,7 @@ fn out_of_order_micro_block() {
             leader.node_service.chain.view_change(),
         );
         let random = pbc::make_VRF(&leader.node_service.network_skey, &seed);
+        let solution = leader.node_service.chain.vdf_solver()();
 
         let mut block = MicroBlock::empty(
             last_block_hash,
@@ -489,6 +490,7 @@ fn out_of_order_micro_block() {
             None,
             leader.node_service.network_pkey,
             random,
+            solution,
             timestamp,
         );
         let leader_node = s.node(&leader_pk).unwrap();

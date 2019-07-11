@@ -21,26 +21,20 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-#![allow(unused)]
-
-extern crate vdf;
+use crate::CryptoError;
 use std::time::SystemTime;
-use vdf::{
-    InvalidIterations, InvalidProof, PietrzakVDF, PietrzakVDFParams, VDFParams,
-    WesolowskiVDFParams, VDF,
-};
+pub use vdf::VDF;
+use vdf::{PietrzakVDF, PietrzakVDFParams, VDFParams};
 
 pub struct VDFMon {
     // One of these constructed by new() on each validator node
-    pub vdf: PietrzakVDF, // a VDF prover / validator object - treat as immutable
-    pub duration: f32,    // expected durations for this VDFMon - treat as immutable
-    pub complexity: u64,  // current complexity level for VDFMon - mutable for epoch adjustments
-    pub tmrec: Vec<SystemTime>, // record of block timestamps seen during an Epoch
+    vdf: PietrzakVDF,       // a VDF prover / validator object - treat as immutable
+    duration: f32,          // expected durations for this VDFMon - treat as immutable
+    complexity: u64,        // current complexity level for VDFMon - mutable for epoch adjustments
+    tmrec: Vec<SystemTime>, // record of block timestamps seen during an Epoch
 }
 
-pub struct Stats {
+struct Stats {
     // used internally when analyzing the epoch timestamps
     pub mn: f32,   // mean of inter-block periods (sec)
     pub sd: f32,   // standard deviation of measurements
@@ -169,7 +163,7 @@ impl VDFMon {
     // ------------------------------------------------------
     // Functions called by all nodes
 
-    pub fn new(duration: u32) -> Self {
+    pub fn new(duration: f32) -> Self {
         // duration in seconds - expected duration
         // Constructs and returns a new VDFMon object. All validators
         // will call this during startup.
@@ -183,13 +177,12 @@ impl VDFMon {
         // Hence we can reasonably scale complexity levels by the ratio of
         // desired_duration :: measured_duration.
         //
-        assert!(duration > 1); // must have at least 2s to overcome overhead
-        let duration = duration as f32;
-        let cmplx = (52429.5 + (duration - 10.59) * 5626.0) as u64;
+        assert!(duration >= 2.0); // must have at least 2s to overcome overhead
+        let complexity = (52429.5 + (duration - 10.59) * 5626.0) as u64;
         VDFMon {
             vdf: PietrzakVDFParams(2048).new(),
             duration,
-            complexity: cmplx,
+            complexity,
             tmrec: Vec::<SystemTime>::new(),
         }
     }
@@ -206,6 +199,9 @@ impl VDFMon {
         // of a new macroblock. They should all reset their timestamp lists
         // and establish a new complexity level for VDF proofs over the next epoch.
         //
+        self.vdf
+            .check_difficulty(complexity)
+            .expect("complexity is valid");
         self.complexity = complexity;
         if self.tmrec.is_empty() {
             self.tmrec.push(SystemTime::now()); // dummy seed in case of misuse
@@ -221,34 +217,22 @@ impl VDFMon {
     // ------------------------------------------------------
     // Functions called only by Leader node
 
-    pub fn prove(&self, challenge: &[u8]) -> Result<Vec<u8>, InvalidIterations> {
-        // Leader nodes call this function from a closure in a Rayon::join() to
-        // perform VDF proving in parallel with block construction acitivities.
-        //
-        // When the join() finishes, we will have delayed by a deterministic period
-        // in one fork, and producing a VDF proof for inclusion in the block header.
-        self.vdf.solve(challenge, self.complexity)
-    }
-
     pub fn add_timestamp(&mut self, new_timestamp: SystemTime) {
-        // Only the Leader node should ever call this function directly,
-        // with the timestamp that he plants into the new block header.
-        //
-        // Leader should call this with the SystemTime obtained after
-        // the VDF proof has been obtained (if one is being computed),
-        // and after block stuffing is finished. The timestamp here
-        // should be the one being recorded in the new block header.
-        //
-        // All other validator nodes indirectly have this function called
-        // whenver they validate a VDFMon.
-        //
         // This function updates the VDF timestamp list
         // for every block seen published during an Epoch.
         //
         self.tmrec.push(new_timestamp);
     }
 
-    pub fn complexity_for_next_epoch(self) -> u64 {
+    pub fn vdf(&self) -> impl VDF {
+        self.vdf.clone()
+    }
+
+    pub fn complexity(&self) -> u64 {
+        return self.complexity;
+    }
+
+    pub fn complexity_for_next_epoch(&self) -> u64 {
         // Analyze the time record of each block that we accumulated,
         // and adjust the complexity to reach our expected duration
         // over the next epoch.
@@ -286,12 +270,11 @@ impl VDFMon {
     // --------------------------------------------------------
     // Functions called by validator nodes
 
-    pub fn validate_microblock(
-        &mut self,
+    pub fn validate_micro_block(
+        &self,
         challenge: &[u8],
-        alleged_solution: Option<&[u8]>,
-        timestamp: SystemTime,
-    ) -> Result<(), InvalidProof> {
+        alleged_solution: &[u8],
+    ) -> Result<(), CryptoError> {
         // Validator nodes will call this function to verify a published VDF proof
         // from a micro-block. The complexity level was established at the start of
         // the current epoch.
@@ -299,38 +282,34 @@ impl VDFMon {
         // We check that the proof, if present, is valid for the complexity level
         // for this current epoch.
         //
-        self.add_timestamp(timestamp);
-        match alleged_solution {
-            Some(proof) => self.vdf.verify(challenge, self.complexity, proof),
-            None => Ok(()),
-        }
+        self.vdf
+            .verify(challenge, self.complexity, alleged_solution)
+            .map_err(|_| CryptoError::InvalidVDFProof)
     }
 
-    pub fn validate_epoch_macroblock(
-        &mut self,
-        challenge: &[u8],
-        alleged_solution: Option<&[u8]>,
-        timestamp: SystemTime,
-        new_cmplx: u64,
-    ) -> Result<(), InvalidProof> {
-        // Validator nodes will call this function with the publised VDF proof from
-        // a proposed block that begins a new epoch, along with the advertised new
-        // complexity level for the next epoch.
+    pub fn validate_macro_block(&self, new_cmplx: u64) -> Result<(), CryptoError> {
+        // Validator nodes will call this function with the advertised new complexity level
+        // for the next epoch.
         //
-        // We check that the VDF proof is valid, and that the next proposed
-        // complexity level corresponds to an adjustment from a mean duration that
-        // is within 3-sigma bounds of our measured mean inter-block periods.
+        // We check that the next proposed complexity level corresponds to an adjustment
+        // from a mean duration that is within 3-sigma bounds of our measured mean inter-block
+        // periods.
         //
-        self.validate_microblock(challenge, alleged_solution, timestamp)?;
+        self.vdf
+            .check_difficulty(new_cmplx)
+            .map_err(|_| CryptoError::InvalidVDFComplexity(new_cmplx))?;
         let stats = self.compute_mn_sd();
-        let cmplx_lo = self.adjusted_complexity(stats.mn - 3.0 * stats.sdmn);
-        let cmplx_hi = self.adjusted_complexity(stats.mn + 3.0 * stats.sdmn);
+        let cmplx_lo = self.adjusted_complexity(stats.mn + 3.0 * stats.sdmn);
+        let cmplx_hi = self.adjusted_complexity(stats.mn - 3.0 * stats.sdmn);
+        assert!(cmplx_lo <= cmplx_hi);
         if cmplx_lo <= new_cmplx && new_cmplx <= cmplx_hi {
             Ok(())
         } else {
             // if we disagree with Leader's new complexity level,
             // just leave it alone and continue with what we had.
-            Err(InvalidProof)
+            Err(CryptoError::UnexpectedVDFComplexity(
+                cmplx_lo, cmplx_hi, new_cmplx,
+            ))
         }
     }
 
@@ -341,7 +320,14 @@ impl VDFMon {
         // Compute the complexity level adjusted to meet our
         // expected duration, given a measured duration
         if measured_duration > 0.0 {
-            (0.5 + (self.complexity as f32) * self.duration / measured_duration) as u64
+            let complexity =
+                (0.5 + (self.complexity as f32) * self.duration / measured_duration) as u64;
+            let complexity = complexity + (complexity & 1);
+            let complexity = if complexity < 66 { 66 } else { complexity };
+            self.vdf
+                .check_difficulty(complexity)
+                .expect("complexity is valid");
+            complexity
         } else {
             self.complexity
         }
