@@ -1055,7 +1055,10 @@ fn vs_failed_join() {
         let mut notification = accounts[0].account.subscribe();
         let (id, response) = vs_start(recipient, SEND_TOKENS, &mut accounts[0], &mut notification);
         accounts[0].poll();
-        assert!(accounts[0].account_service.vs_session.is_some());
+        assert!(accounts[0]
+            .account_service
+            .active_snowball_session
+            .is_some());
         assert!(!accounts[0].account_service.pending_payments.is_empty());
 
         s.filter_unicast(&[stegos_node::CHAIN_LOADER_TOPIC]);
@@ -1070,7 +1073,10 @@ fn vs_failed_join() {
 
         accounts[0].poll();
         assert!(accounts[0].account_service.pending_payments.is_empty());
-        assert!(accounts[0].account_service.vs_session.is_none());
+        assert!(accounts[0]
+            .account_service
+            .active_snowball_session
+            .is_none());
 
         s.filter_unicast(&[stegos_node::CHAIN_LOADER_TOPIC]);
         s.filter_broadcast(&[stegos_node::VIEW_CHANGE_TOPIC]);
@@ -1145,7 +1151,10 @@ fn vs_with_wrong_facilitator_pool() {
         let mut notification = accounts[0].account.subscribe();
         let (id, response) = vs_start(recipient, SEND_TOKENS, &mut accounts[0], &mut notification);
         accounts[0].poll();
-        assert!(accounts[0].account_service.vs_session.is_some());
+        assert!(accounts[0]
+            .account_service
+            .active_snowball_session
+            .is_some());
 
         s.filter_unicast(&[stegos_node::CHAIN_LOADER_TOPIC]);
         s.filter_broadcast(&[stegos_node::VIEW_CHANGE_TOPIC]);
@@ -1161,7 +1170,10 @@ fn vs_with_wrong_facilitator_pool() {
             .network
             .receive_unicast(key, txpool::POOL_ANNOUNCE_TOPIC, msg);
         accounts[0].poll();
-        assert!(accounts[0].account_service.vs_session.is_some());
+        assert!(accounts[0]
+            .account_service
+            .active_snowball_session
+            .is_some());
 
         s.filter_unicast(&[stegos_node::CHAIN_LOADER_TOPIC]);
 

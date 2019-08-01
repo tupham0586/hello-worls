@@ -31,10 +31,11 @@ use stegos_blockchain::protos::*;
 use stegos_crypto::protos::*;
 include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 use super::storage::{LogEntry, OutputValue, PaymentValue};
-use crate::storage::{ExtendedOutputValue, PaymentTransactionValue};
+use crate::storage::{ExtendedOutputValue, PaymentTransactionValue, SnowballRequest};
 use stegos_blockchain::{
     PaymentOutput, PaymentPayloadData, PaymentTransaction, PublicPaymentOutput,
 };
+use stegos_crypto::hash::Hash;
 use stegos_crypto::scc::{Fr, PublicKey};
 use stegos_node::TransactionStatus;
 
@@ -45,7 +46,7 @@ impl ProtoConvert for LogEntry {
     fn into_proto(&self) -> Self::Proto {
         let mut msg = account_log::LogEntry::new();
         match self {
-            LogEntry::Outgoing { tx } => {
+            LogEntry::Outgoing(tx) => {
                 let mut enum_value = account_log::Outgoing::new();
                 enum_value.set_value(tx.into_proto());
                 msg.set_outgoing(enum_value);
@@ -55,6 +56,10 @@ impl ProtoConvert for LogEntry {
                 enum_value.set_output(output.into_proto());
                 enum_value.set_is_change(*is_change);
                 msg.set_incoming(enum_value);
+            }
+            LogEntry::PendingSnowball(s) => {
+                let enum_value = s.into_proto();
+                msg.set_snowball(enum_value);
             }
         }
         msg
@@ -69,7 +74,11 @@ impl ProtoConvert for LogEntry {
             }
             Some(account_log::LogEntry_oneof_enum_value::outgoing(ref msg)) => {
                 let tx = PaymentTransactionValue::from_proto(msg.get_value())?;
-                LogEntry::Outgoing { tx }
+                LogEntry::Outgoing(tx.into())
+            }
+            Some(account_log::LogEntry_oneof_enum_value::snowball(ref msg)) => {
+                let r = SnowballRequest::from_proto(msg)?;
+                LogEntry::PendingSnowball(r)
             }
             None => {
                 return Err(
@@ -78,6 +87,49 @@ impl ProtoConvert for LogEntry {
             }
         };
         Ok(payload)
+    }
+}
+
+impl ProtoConvert for SnowballRequest {
+    type Proto = account_log::SnowballRequest;
+    fn into_proto(&self) -> Self::Proto {
+        let mut msg = account_log::SnowballRequest::new();
+        for input in &self.inputs {
+            msg.inputs.push(input.into_proto())
+        }
+        msg.set_session_id(self.session_id.into_proto());
+        msg.set_amount(self.amount);
+        msg.set_recipient(self.recipient.into_proto());
+        if let Some(finished) = self.finished {
+            msg.set_finished(finished.into_proto());
+        }
+        msg
+    }
+
+    fn from_proto(proto: &Self::Proto) -> Result<Self, Error> {
+        let amount = proto.get_amount();
+        let finished = if proto.has_finished() {
+            Some(Hash::from_proto(proto.get_finished())?)
+        } else {
+            None
+        };
+
+        let mut inputs = Vec::new();
+
+        for input in proto.inputs.iter() {
+            inputs.push(Hash::from_proto(input)?)
+        }
+
+        let recipient = PublicKey::from_proto(proto.get_recipient())?;
+        let session_id = Hash::from_proto(proto.get_session_id())?;
+
+        Ok(SnowballRequest {
+            amount,
+            finished,
+            inputs,
+            recipient,
+            session_id,
+        })
     }
 }
 

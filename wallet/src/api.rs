@@ -89,16 +89,12 @@ pub enum AccountNotification {
         balance: i64,
         available_balance: i64,
     },
-    SnowballStarted {
-        session_id: Hash,
-    },
     SnowballCreated {
         tx_hash: Hash,
         session_id: Hash,
     },
-    SnowballStopped {
-        tx_hash: Option<Hash>,
-        session_id: Hash,
+    SnowballError {
+        error: String,
     },
     TransactionStatus {
         tx_hash: Hash,
@@ -232,6 +228,9 @@ pub enum AccountResponse {
     Sealed,
     Unsealed,
     TransactionCreated(TransactionInfo),
+    SnowballStarted {
+        session_id: Hash,
+    },
     BalanceInfo {
         balance: i64,
         available_balance: i64,

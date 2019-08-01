@@ -21,7 +21,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#![deny(warnings)]
+//#![deny(warnings)]
 
 pub mod api;
 mod change;
@@ -146,7 +146,8 @@ struct UnsealedAccountService {
     //
     /// ValueShuffle State.
     vs: Option<ValueShuffle>,
-    vs_session: Option<(Hash, oneshot::Sender<AccountResponse>)>,
+    //TODO: Temporary hack to receive newly created transaction from valueshuffle.
+    active_snowball_session: Option<Hash>,
     transaction_response: Option<oneshot::Receiver<NodeResponse>>,
 
     //
@@ -197,7 +198,8 @@ impl UnsealedAccountService {
         let public_payments = HashMap::new();
         let stakes: HashMap<Hash, StakeValue> = HashMap::new();
         let vs = None;
-        let vs_session = None;
+
+        let active_snowball_session = None;
 
         let last_macro_block_timestamp = Timestamp::UNIX_EPOCH;
 
@@ -238,7 +240,7 @@ impl UnsealedAccountService {
             resend_tx,
             check_pending_utxos,
             vs,
-            vs_session,
+            active_snowball_session,
             stake_epochs,
             max_inputs_in_tx,
             last_macro_block_timestamp,
@@ -293,7 +295,7 @@ impl UnsealedAccountService {
         let payment_info = PaymentTransactionValue::new_payment(tx.clone(), extended_outputs);
 
         self.account_log
-            .push_outgoing(Timestamp::now(), payment_info.clone())?;
+            .push_payment_transaction(Timestamp::now(), payment_info.clone())?;
 
         let time = clock::now();
         for input in &tx.txins {
@@ -350,7 +352,7 @@ impl UnsealedAccountService {
         let payment_info = PaymentTransactionValue::new_payment(tx.clone(), extended_outputs);
 
         self.account_log
-            .push_outgoing(Timestamp::now(), payment_info.clone())?;
+            .push_payment_transaction(Timestamp::now(), payment_info.clone())?;
 
         let time = clock::now();
         for input in &tx.txins {
@@ -390,7 +392,7 @@ impl UnsealedAccountService {
         payment_fee: i64,
         comment: String,
         locked_timestamp: Option<Timestamp>,
-    ) -> Result<Hash, Error> {
+    ) -> Result<SnowballRequest, Error> {
         if self.vs.is_some() {
             return Err(WalletError::SnowballBusy.into());
         }
@@ -412,6 +414,16 @@ impl UnsealedAccountService {
         )?;
         assert!(inputs.len() <= valueshuffle::MAX_UTXOS);
         let session_id = Hash::random();
+        let snowball = SnowballRequest {
+            recipient: *recipient,
+            amount,
+            inputs: inputs.iter().map(|(h, _)| *h).collect(),
+            session_id,
+            finished: None,
+        };
+
+        self.account_log
+            .push_snowball_request(Timestamp::now(), snowball.clone())?;
         let time = clock::now();
         for (input, _) in &inputs {
             assert!(self
@@ -425,6 +437,7 @@ impl UnsealedAccountService {
                 )
                 .is_none());
         }
+
         let vs = ValueShuffle::new(
             self.account_skey.clone(),
             self.account_pkey.clone(),
@@ -441,7 +454,8 @@ impl UnsealedAccountService {
         metrics::WALLET_CREATEAD_SECURE_PAYMENTS
             .with_label_values(&[&String::from(&self.account_pkey)])
             .inc();
-        Ok(session_id)
+
+        Ok(snowball)
     }
 
     /// Stake money into the escrow.
@@ -466,7 +480,7 @@ impl UnsealedAccountService {
         let payment_info = PaymentTransactionValue::new_stake(tx.clone());
 
         self.account_log
-            .push_outgoing(Timestamp::now(), payment_info.clone())?;
+            .push_payment_transaction(Timestamp::now(), payment_info.clone())?;
 
         let time = clock::now();
         for input in &tx.txins {
@@ -793,8 +807,9 @@ impl UnsealedAccountService {
         let payment_info = PaymentTransactionValue::new_vs(tx.clone());
 
         self.account_log
-            .push_outgoing(Timestamp::now(), payment_info.clone())?;
-
+            .push_payment_transaction(Timestamp::now(), payment_info.clone())?;
+        self.account_log
+            .finish_snowball_request(session_id, tx_hash)?;
         if is_leader {
             // if I'm leader, then send the completed super-transaction
             // to the blockchain.
@@ -867,15 +882,15 @@ impl UnsealedAccountService {
             if p.time + PENDING_UTXO_TIME <= now {
                 trace!("Found outdated pending utxo = {}", hash);
                 balance_unlocked = true;
-                match (p.vs_session, &self.vs_session) {
-                    (Some(hash), Some(vs_session)) if hash == vs_session.0 => {
+                match (p.vs_session, &self.active_snowball_session) {
+                    (Some(hash), Some(session_id)) if &hash == session_id => {
                         info!(
                             "Some outputs of snowball are now outdated: vs_session = {}",
                             hash
                         );
                         warn!("Resetting ValueShuffle on timeout.");
                         self.vs = None;
-                        let _ = self.vs_session.take();
+                        let _ = self.active_snowball_session.take();
                     }
                     (Some(hash), _) => {
                         trace!(
@@ -1018,32 +1033,35 @@ impl Future for UnsealedAccountService {
             match vs.poll() {
                 Ok(Async::Ready(ValueShuffleOutput { tx, is_leader })) => {
                     self.vs = None;
-                    let (session_id, response_sender) =
-                        self.vs_session.take().expect("active snowball session");
-                    let response = match self.handle_snowball_transaction(tx, is_leader, session_id)
-                    {
-                        Ok(tx) => AccountResponse::TransactionCreated(tx),
+                    let session_id = self
+                        .active_snowball_session
+                        .take()
+                        .expect("active snowball session");
+                    match self.handle_snowball_transaction(tx, is_leader, session_id) {
+                        Ok(_tx) => {}
                         Err(e) => {
                             error!("Error during processing snowball transaction = {}", e);
-                            AccountResponse::Error {
+                            let notification = AccountNotification::SnowballError {
                                 error: e.to_string(),
-                            }
+                            };
+                            let _ = self.notify(notification);
                         }
                     };
-                    let _ = response_sender.send(response);
                 }
                 Ok(Async::NotReady) => {}
                 Err((error, inputs)) => {
-                    let (_session_id, response_sender) =
-                        self.vs_session.take().expect("active snowball session");
+                    let _session_id = self
+                        .active_snowball_session
+                        .take()
+                        .expect("active snowball session");
                     warn!("Error during snowball session error={}.", error);
                     for (input_hash, _input) in inputs {
                         assert!(self.pending_payments.remove(&input_hash).is_some())
                     }
-                    let response = AccountResponse::Error {
+                    let notification = AccountNotification::SnowballError {
                         error: error.to_string(),
                     };
-                    let _ = response_sender.send(response);
+                    let _ = self.notify(notification);
                 }
             }
         }
@@ -1166,12 +1184,12 @@ impl Future for UnsealedAccountService {
                                 comment,
                                 locked_timestamp,
                             ) {
-                                Ok(session_id) => {
-                                    self.notify(AccountNotification::SnowballStarted {
-                                        session_id,
-                                    });
-                                    self.vs_session = (session_id, tx).into();
-                                    continue;
+                                Ok(request) => {
+                                    // update session and produce response about created notification.
+                                    self.active_snowball_session = request.session_id.into();
+                                    AccountResponse::SnowballStarted {
+                                        session_id: request.session_id,
+                                    }
                                 }
                                 Err(e) => AccountResponse::Error {
                                     error: format!("{}", e),

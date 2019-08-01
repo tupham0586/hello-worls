@@ -52,9 +52,8 @@ pub enum LogEntry {
         output: OutputValue,
         is_change: bool,
     },
-    Outgoing {
-        tx: PaymentTransactionValue,
-    },
+    Outgoing(PaymentTransactionValue),
+    PendingSnowball(SnowballRequest),
 }
 
 /// Currently we support only transaction that have 2 outputs,
@@ -72,6 +71,8 @@ pub struct AccountLog {
     //
     // Indexes
     //
+    /// Snowball requests list.
+    pending_snowball: HashMap<Hash, Timestamp>,
     /// Index of UTXOS that known to be change.
     known_changes: HashSet<Hash>,
     /// Index of all created transactions by this wallet.
@@ -113,6 +114,7 @@ impl AccountLog {
             epoch_transactions: HashSet::new(),
             utxos_list: HashMap::new(),
             known_changes: HashSet::new(),
+            pending_snowball: HashMap::new(),
         };
         log.recover_state();
         log
@@ -134,6 +136,7 @@ impl AccountLog {
             epoch_transactions: HashSet::new(),
             utxos_list: HashMap::new(),
             known_changes: HashSet::new(),
+            pending_snowball: HashMap::new(),
         }
     }
 
@@ -152,7 +155,7 @@ impl AccountLog {
                     );
                     assert!(self.utxos_list.insert(output_hash, timestamp).is_none());
                 }
-                LogEntry::Outgoing { tx } => {
+                LogEntry::Outgoing(tx) => {
                     let tx_hash = Hash::digest(&tx.tx);
                     let status = tx.status;
                     trace!("Recovered tx: tx={}, status={:?}", tx_hash, status);
@@ -164,6 +167,13 @@ impl AccountLog {
                             self.known_changes.insert(utxo_hash);
                         }
                     }
+                }
+                LogEntry::PendingSnowball(request) => {
+                    trace!(
+                        "Found pending snowball request: session_id = {}, finished = {}",
+                        request.session_id,
+                        request.finished.is_some()
+                    );
                 }
             }
         }
@@ -215,7 +225,7 @@ impl AccountLog {
             let value = self.database.get(&key)?.expect("Log entry not found.");
             let entry = LogEntry::from_buffer(&value)?;
             Ok(match entry {
-                LogEntry::Outgoing { tx } => tx,
+                LogEntry::Outgoing(tx) => tx,
                 _ => panic!("Found link to incomming entry, in transaaction list."),
             })
         })
@@ -249,14 +259,14 @@ impl AccountLog {
     }
 
     /// Insert log entry as last entry in log.
-    pub fn push_outgoing(
+    pub fn push_payment_transaction(
         &mut self,
         timestamp: Timestamp,
         tx: PaymentTransactionValue,
     ) -> Result<Timestamp, Error> {
         let tx_hash = Hash::digest(&tx.tx);
         let status = tx.status.clone();
-        let entry = LogEntry::Outgoing { tx: tx.clone() };
+        let entry = tx.clone().into();
         let timestamp = self.push_entry(timestamp, entry)?;
         assert!(self.created_txs.insert(tx_hash, timestamp).is_none());
         self.update_tx_indexes(tx_hash, status);
@@ -266,6 +276,22 @@ impl AccountLog {
                 self.known_changes.insert(utxo_hash);
             }
         }
+        Ok(timestamp)
+    }
+
+    /// Insert log entry as last entry in log.
+    pub fn push_snowball_request(
+        &mut self,
+        timestamp: Timestamp,
+        request: SnowballRequest,
+    ) -> Result<Timestamp, Error> {
+        let session_id = request.session_id;
+        let entry = request.clone().into();
+        let timestamp = self.push_entry(timestamp, entry)?;
+        assert!(self
+            .pending_snowball
+            .insert(session_id, timestamp)
+            .is_none());
         Ok(timestamp)
     }
 
@@ -326,15 +352,35 @@ impl AccountLog {
     ) -> Result<(), Error> {
         self.update_log_entry(timestamp, |mut e| {
             match &mut e {
-                LogEntry::Outgoing { ref mut tx } => {
+                LogEntry::Outgoing(ref mut tx) => {
                     tx.status = status.clone();
                 }
-                LogEntry::Incoming { .. } => bail!("Expected outgoing transaction."),
+                _ => bail!("Expected outgoing transaction."),
             };
             Ok(e)
         })?;
 
         self.update_tx_indexes(tx_hash, status);
+        Ok(())
+    }
+
+    /// Finish PendingSnowball response.
+    pub fn finish_snowball_request(
+        &mut self,
+        session_id: Hash,
+        tx_hash: Hash,
+    ) -> Result<(), Error> {
+        let timestamp = self.pending_snowball.remove(&session_id).unwrap();
+        self.update_log_entry(timestamp, |mut e| {
+            match &mut e {
+                LogEntry::PendingSnowball(ref mut request) => {
+                    assert!(request.finished.is_none());
+                    request.finished = Some(tx_hash);
+                }
+                _ => bail!("Expected outgoing transaction."),
+            };
+            Ok(e)
+        })?;
         Ok(())
     }
 
@@ -351,7 +397,7 @@ impl AccountLog {
             let mut changed_to_status = None;
             self.update_log_entry(timestamp, |mut e| {
                 match &mut e {
-                    LogEntry::Outgoing { ref mut tx } => match tx.status {
+                    LogEntry::Outgoing(ref mut tx) => match tx.status {
                         TransactionStatus::Prepared { epoch, .. } => {
                             trace!("Finalize tx={}", tx_hash);
                             let status = TransactionStatus::Committed { epoch };
@@ -360,7 +406,7 @@ impl AccountLog {
                         }
                         _ => {}
                     },
-                    LogEntry::Incoming { .. } => bail!("Expected outgoing transaction."),
+                    _ => bail!("Expected outgoing transaction."),
                 };
                 Ok(e)
             })
@@ -464,6 +510,33 @@ impl Hashable for ExtendedOutputValue {
         }
         self.is_change.hash(hasher);
     }
+}
+
+impl From<SnowballRequest> for LogEntry {
+    fn from(value: SnowballRequest) -> Self {
+        LogEntry::PendingSnowball(value)
+    }
+}
+
+impl From<PaymentTransactionValue> for LogEntry {
+    fn from(value: PaymentTransactionValue) -> Self {
+        LogEntry::Outgoing(value)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SnowballRequest {
+    /// Collection of inputs, for supertransaction.
+    pub inputs: Vec<Hash>,
+    /// hash of snowball session.
+    pub session_id: Hash,
+
+    /// destination PublicKey.
+    pub recipient: PublicKey,
+    /// amount of money sended in utxo.
+    pub amount: i64,
+    /// if snowball finished, hash of tx is provided.
+    pub finished: Option<Hash>,
 }
 
 /// Information about created transactions
@@ -574,10 +647,11 @@ impl LogEntry {
                 output: output.to_info(),
                 is_change,
             },
-            LogEntry::Outgoing { ref tx } => LogEntryInfo::Outgoing {
+            LogEntry::Outgoing(ref tx) => LogEntryInfo::Outgoing {
                 timestamp,
                 tx: tx.to_info(),
             },
+            LogEntry::PendingSnowball(ref _request) => unimplemented!(),
         }
     }
 

@@ -53,8 +53,18 @@ message LogEntry {
     oneof enum_value {
         Incoming incoming = 1;
         Outgoing outgoing = 2;
+        SnowballRequest snowball = 3;
     }
 }
+
+message SnowballRequest {
+    repeated stegos.crypto.Hash inputs = 1;
+    stegos.crypto.Hash session_id = 2;
+    stegos.crypto.PublicKey recipient = 3;
+    int64 amount = 4;
+    stegos.crypto.Hash finished = 5;
+}
+
 
 message EpochWithOffset {
     uint64 epoch = 1;
