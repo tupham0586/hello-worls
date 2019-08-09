@@ -72,6 +72,7 @@
 // ========================================================================
 
 #![allow(non_snake_case)]
+#![allow(unused)]
 
 mod error;
 pub use error::*;
@@ -187,6 +188,13 @@ pub struct SnowballOutput {
     pub tx: PaymentTransaction,
     pub outputs: Vec<OutputValue>,
     pub is_leader: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum SnowballTestPlan {
+    // If second arg is None, don't send message to anyone,
+    // else, don't send message to indicated participants
+    StopBefore(MessageState, Option<Vec<ParticipantID>>),
 }
 
 /// Snowball implementation.
@@ -347,6 +355,9 @@ pub struct Snowball {
     // Receive can terminate either by timeout, or early after receiving
     // from all expected participants.
     msg_state: MessageState,
+
+    // Snowball test-plan
+    test_plan: Option<SnowballTestPlan>,
 }
 
 impl Snowball {
@@ -471,9 +482,15 @@ impl Snowball {
             dicemix_nbr_utxo_chunks: None,
             commit_phase_participants: Vec::new(),
             timer_context: (MessageState::Start, Hash::from_str("init")),
+            test_plan: None,
         };
         sb.send_pool_join();
         sb
+    }
+
+    // for debug - set up a test plan
+    pub fn set_test_plan(&mut self, plan: SnowballTestPlan) {
+        self.test_plan = Some(plan.clone());
     }
 
     /// Sets timeout.
@@ -1246,6 +1263,7 @@ impl Snowball {
         self.sess_pkeys = HashMap::new();
         self.sess_pkeys.insert(self.my_participant_id, sess_pk);
 
+        self.msg_state = MessageState::SharedKeying;
         self.send_session_pkey(&sess_pk, &my_sigKcmp);
 
         // Collect cloaked sharing keys from others
@@ -1348,6 +1366,7 @@ impl Snowball {
         self.commits.insert(self.my_participant_id, my_commit);
 
         // send sharing commitment to other participants
+        self.msg_state = MessageState::Commitment;
         self.send_commitment(&my_commit);
 
         // fill in commits
@@ -1397,6 +1416,7 @@ impl Snowball {
             .get(&self.my_participant_id)
             .expect("Can't access my own fee");
 
+        self.msg_state = MessageState::CloakedVals;
         self.send_cloaked_data(
             &my_matrix,
             &my_cloaked_gamma_adj,
@@ -1552,6 +1572,7 @@ impl Snowball {
         let sig = self.trans.sig.clone();
         self.signatures.insert(self.my_participant_id, sig.clone());
 
+        self.msg_state = MessageState::Signature;
         self.send_signature(&sig);
 
         // fill in signatures
@@ -1652,6 +1673,7 @@ impl Snowball {
         self.sess_skeys
             .insert(self.my_participant_id, self.sess_skey.clone());
 
+        self.msg_state = MessageState::SecretKeying;
         self.send_session_skey(&self.sess_skey);
 
         // fill in sess_skeys
@@ -1872,8 +1894,22 @@ impl Snowball {
     // -------------------------------------------------
 
     fn send_signed_message(&self, payload: &SnowballPayload) {
+        // for testing - see if we are asked to not send message
+        let skip_parts = match self.test_plan.as_ref() {
+            None => vec![self.my_participant_id], // dummy, we never send to self anyway
+            Some(SnowballTestPlan::StopBefore(phase, parts)) => {
+                if *phase == self.msg_state {
+                    match &*parts {
+                        Some(part_ids) => part_ids.clone(),
+                        None => self.participants.clone(), // send to nobody
+                    }
+                } else {
+                    vec![self.my_participant_id] // dummy, we never send to self anyway
+                }
+            }
+        };
         for pkey in &self.participants {
-            if *pkey != self.my_participant_id {
+            if *pkey != self.my_participant_id && !skip_parts.contains(pkey) {
                 let msg = SnowballMessage {
                     sid: self.session_id,
                     payload: payload.clone(),
