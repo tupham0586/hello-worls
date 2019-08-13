@@ -1079,13 +1079,22 @@ fn create_snowball_tx() {
         if let LogEntryInfo::Outgoing { timestamp, tx } = entry {
             let outputs = &tx.outputs;
 
-            let output = unwrap_payment(outputs[0].clone());
+            assert_eq!(outputs.len(), 5);
+            let (amount, changes) = outputs
+                .iter()
+                .fold((0, 0), |(amount, mut changes), output| {
+                    let output = unwrap_payment(output.clone());
 
-            assert_eq!(outputs.len(), 1);
-            assert_eq!(output.amount, SEND_TOKENS);
-            assert!(!output.is_change);
-            assert!(output.rvalue.is_none());
-            assert_eq!(output.recipient, recipient);
+                    assert!(output.rvalue.is_none());
+                    if !output.is_change {
+                        assert_eq!(output.recipient, recipient);
+                    } else {
+                        changes += 1
+                    }
+                    (amount + output.amount, changes)
+                });
+
+            assert_eq!(amount, SEND_TOKENS);
         } else {
             unreachable!();
         }

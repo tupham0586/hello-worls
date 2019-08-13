@@ -472,7 +472,13 @@ impl ConsoleService {
                                     }
                                 }
                             }
-                            None => if snowball { (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT } else { PAYMENT_FEE }, // use the default value.
+                            None => {
+                                if snowball {
+                                    (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT
+                                } else {
+                                    PAYMENT_FEE
+                                }
+                            } // use the default value.
                         };
                         (
                             public,
