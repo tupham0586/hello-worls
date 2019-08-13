@@ -24,6 +24,7 @@
 use crate::change::*;
 use crate::error::*;
 use crate::snowball::ProposedUTXO;
+use crate::snowball::{FEE_PER_TXOUT, MAX_SHARING_TXOUTS};
 use crate::storage::{OutputValue, PaymentValue, StakeValue};
 use failure::Error;
 use log::*;
@@ -66,6 +67,7 @@ pub(crate) fn create_snowball_transaction<'a, UnspentIter>(
 where
     UnspentIter: Iterator<Item = (&'a PaymentOutput, i64, Option<Timestamp>)>,
 {
+    assert!(payment_fee == (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT);
     if amount < 0 {
         return Err(WalletError::NegativeAmount(amount).into());
     }
@@ -83,12 +85,12 @@ where
 
     trace!("Checking for available funds in the account...");
     let fee = payment_fee;
-    let fee_change = fee + payment_fee;
+    // let fee_change = fee + payment_fee;
     let (inputs, fee, change) = find_utxo(
         unspent_iter,
         amount,
         fee,
-        fee_change,
+        fee, // fee_change,
         last_block_time,
         max_inputs_in_tx,
     )?;
@@ -650,6 +652,8 @@ pub(crate) fn create_cloaking_transaction<'a, UnspentIter>(
 where
     UnspentIter: Iterator<Item = &'a PublicPaymentOutput>,
 {
+    assert!(payment_fee == (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT);
+
     let data = PaymentPayloadData::Comment(String::from("Exchange public UTXOs to cloaked"));
 
     debug!("Creating a cloaking transaction: recipient={:?}", recipient);

@@ -39,6 +39,7 @@ use stegos_api::*;
 use stegos_blockchain::Timestamp;
 use stegos_crypto::hash::Hash;
 use stegos_crypto::{pbc, scc};
+use stegos_wallet::snowball::{FEE_PER_TXOUT, MAX_SHARING_TXOUTS};
 
 // ----------------------------------------------------------------
 // Public API.
@@ -471,7 +472,7 @@ impl ConsoleService {
                                     }
                                 }
                             }
-                            None => PAYMENT_FEE, // use the default value.
+                            None => if snowball { (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT } else { PAYMENT_FEE }, // use the default value.
                         };
                         (
                             public,

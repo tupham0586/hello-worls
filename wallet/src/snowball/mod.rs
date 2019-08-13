@@ -61,8 +61,8 @@
 //
 // The arguments to start() are checked for validity:
 //
-//  1. No more than MAX_UTXOS can be indicated by the proposed spending list
-//     (Currently MAX_UTXOS = 5). If fewer UTXOs will be produced, then the
+//  1. No more than MAX_SHARING_TXOUTS can be indicated by the proposed spending list
+//     (Currently MAX_SHARING_TXOUTS = 5). If fewer UTXOs will be produced, then the
 //     DiceMix sharing matrix will be zero-filled and cloaked up to this maximum.
 //
 //  2. Each TXIN must refer to a blockchain UTXO that can be proven to be
@@ -125,7 +125,8 @@ pub const SNOWBALL_TOPIC: &'static str = "snowball";
 
 pub const SNOWBALL_TIMER: Duration = Duration::from_secs(60); // recurring 1sec events
 
-pub const MAX_UTXOS: usize = 5; // max nbr of txout UTXO permitted
+pub const MAX_SHARING_TXOUTS: usize = 5; // max nbr of txout UTXO permitted
+pub const FEE_PER_TXOUT: i64 = 1_000; // 0.001 STG = fee expected per txout UTXO shared
 
 pub const MSG_FLOOD_LIMIT: usize = 5; // max nbr of pending messages from one participant
 
@@ -378,7 +379,21 @@ impl Snowball {
         my_fee: i64,
     ) -> Snowball {
         // check the maximal number of UTXOs.
-        assert!(my_txouts.len() <= MAX_UTXOS);
+        assert!(my_txouts.len() <= MAX_SHARING_TXOUTS);
+        assert!(my_fee == (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT);
+
+        // fill out proposed UTXO's with dummies if fewer than
+        // consistent max number
+        let mut my_filled_txouts = my_txouts.clone();
+        for _ in my_txouts.len()..MAX_SHARING_TXOUTS {
+            my_filled_txouts.push(ProposedUTXO {
+                recip: account_pkey.clone(), // back to myself
+                amount: 0,
+                data: PaymentPayloadData::Comment(String::from("Dummy UTXO")),
+                is_change: true,
+                locked_timestamp: None,
+            });
+        }
 
         // validate each TXIN and get my initial signature keying info
         let utxos = my_txins.iter().map(|(_txin, u)| u.clone()).collect();
@@ -452,7 +467,7 @@ impl Snowball {
             timer,
             events,
             my_txins,
-            my_txouts,
+            my_txouts: my_filled_txouts,
             my_utxos: Vec::new(),
             my_fee,
             sess_skey: account_skey.clone(), // dummy placeholder for now
@@ -968,8 +983,8 @@ impl Snowball {
         // It is possible for messages to have arrived from other participants,
         // even when our own state is Start. They might be ahead of us.
         match (self.msg_state, payload) {
-            (MessageState::SharedKeying, SnowballPayload::SharedKeying { pkey, ksig }) => {
-                self.handle_shared_keying(from, sid, pkey, ksig)
+            (MessageState::SharedKeying, SnowballPayload::SharedKeying { pkey, ksig, fee }) => {
+                self.handle_shared_keying(from, sid, pkey, ksig, *fee)
             }
             (MessageState::Commitment, SnowballPayload::Commitment { cmt }) => {
                 self.handle_commitment(from, sid, cmt)
@@ -979,10 +994,9 @@ impl Snowball {
                 SnowballPayload::CloakedVals {
                     matrix,
                     gamma_sum,
-                    fee_sum,
                     cloaks,
                 },
-            ) => self.handle_cloaked_vals(from, sid, matrix, gamma_sum, fee_sum, cloaks),
+            ) => self.handle_cloaked_vals(from, sid, matrix, gamma_sum, cloaks),
             (MessageState::Signature, SnowballPayload::Signature { sig }) => {
                 self.handle_signature(from, sid, sig)
             }
@@ -1038,14 +1052,19 @@ impl Snowball {
         sid: &Hash,
         pkey: &PublicKey,
         ksig: &Pt,
+        fee: i64,
     ) -> MsgHandlerResponse {
         if *sid == self.session_id {
             if self.pending_participants.contains(from) {
                 // debug!("In handle_shared_keying()");
-                debug!("received shared keying {:?}", pkey);
-                self.sigK_vals.insert(*from, *ksig);
-                self.sess_pkeys.insert(*from, *pkey);
-                MsgHandlerResponse::Accept
+                if fee == (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT {
+                    debug!("received shared keying {:?}", pkey);
+                    self.sigK_vals.insert(*from, *ksig);
+                    self.sess_pkeys.insert(*from, *pkey);
+                    MsgHandlerResponse::Accept
+                } else {
+                    MsgHandlerResponse::Discard
+                }
             } else {
                 MsgHandlerResponse::Discard
             }
@@ -1093,7 +1112,6 @@ impl Snowball {
         sid: &Hash,
         matrix: &DcMatrix,
         gamma_sum: &Fr,
-        fee_sum: &Fr,
         cloaks: &HashMap<ParticipantID, Hash>,
     ) -> MsgHandlerResponse {
         // debug!("In handle_cloaked_vals()");
@@ -1103,12 +1121,11 @@ impl Snowball {
                 debug!("Checking commitment {}", cmt);
                 // DiceMix expects to be able to find all missing
                 // participant cloaking values
-                if *cmt == hash_data(matrix, gamma_sum, fee_sum) && self.same_exclusions(cloaks) {
+                if *cmt == hash_data(matrix, gamma_sum) && self.same_exclusions(cloaks) {
                     debug!("Commitment check passed {}", cmt);
                     debug!("Saving cloaked data");
                     self.matrices.insert(*from, matrix.clone());
                     self.cloaked_gamma_adjs.insert(*from, gamma_sum.clone());
-                    self.cloaked_fees.insert(*from, fee_sum.clone());
                     self.all_excl_cloaks.insert(*from, cloaks.clone());
                     MsgHandlerResponse::Accept
                 } else {
@@ -1348,18 +1365,8 @@ impl Snowball {
         self.cloaked_gamma_adjs
             .insert(self.my_participant_id, my_cloaked_gamma_adj.clone());
 
-        self.cloaked_fees = HashMap::new();
-        let my_cloaked_fee = dc_encode_scalar(
-            Fr::from(self.my_fee),
-            &self.commit_phase_participants,
-            &self.my_participant_id,
-            &self.k_cloaks,
-        );
-        self.cloaked_fees
-            .insert(self.my_participant_id, my_cloaked_fee.clone());
-
         // form commitments to our matrix and gamma sum
-        let my_commit = hash_data(&my_matrix, &my_cloaked_gamma_adj, &my_cloaked_fee);
+        let my_commit = hash_data(&my_matrix, &my_cloaked_gamma_adj);
 
         // Collect and validate commitments from other participants
         self.commits = HashMap::new();
@@ -1411,18 +1418,9 @@ impl Snowball {
             .cloaked_gamma_adjs
             .get(&self.my_participant_id)
             .expect("Can't access my own gamma_adj");
-        let my_cloaked_fee = self
-            .cloaked_fees
-            .get(&self.my_participant_id)
-            .expect("Can't access my own fee");
 
         self.msg_state = MessageState::CloakedVals;
-        self.send_cloaked_data(
-            &my_matrix,
-            &my_cloaked_gamma_adj,
-            &my_cloaked_fee,
-            &self.excl_cloaks,
-        );
+        self.send_cloaked_data(&my_matrix, &my_cloaked_gamma_adj, &self.excl_cloaks);
 
         // At this point, if we don't hear valid responses from all
         // remaining participants, we abort and start a new session
@@ -1489,7 +1487,7 @@ impl Snowball {
             &self.participants,
             &self.matrices,
             &self.my_participant_id,
-            MAX_UTXOS,
+            MAX_SHARING_TXOUTS,
             self.dicemix_nbr_utxo_chunks.unwrap(),
             &self.excl_participants, // the excluded participants
             &self.all_excl_cloaks,
@@ -1511,6 +1509,7 @@ impl Snowball {
             }
         });
         debug!("txout hash: {}", state.result());
+        assert!(all_utxos.len() == self.commit_phase_participants.len() * MAX_SHARING_TXOUTS);
         // --------------------------------------------------------
         // for debugging - ensure that all of our txouts made it
         {
@@ -1526,22 +1525,8 @@ impl Snowball {
             &self.excl_participants,
             &self.all_excl_cloaks,
         );
-        let total_fees_f = dc_scalar_open(
-            &self.participants,
-            &self.cloaked_fees,
-            &self.excl_participants,
-            &self.all_excl_cloaks,
-        );
-        let total_fees = {
-            match total_fees_f.clone().to_i64() {
-                Ok(val) => val,
-                _ => {
-                    debug!("I failed in conversion of total_fees");
-                    0 // will probably fail validation...
-                }
-            }
-        };
-        debug!("total fees {:?} -> {:?}", total_fees_f.clone(), total_fees);
+        let total_fees = (all_utxos.len() as i64) * FEE_PER_TXOUT;
+        debug!("total fees: {:?}", total_fees);
         debug!("gamma_adj: {:?}", gamma_adj);
 
         let K_sum = self
@@ -1708,7 +1693,6 @@ impl Snowball {
                 &self.sess_skeys,
                 &self.matrices,
                 &self.cloaked_gamma_adjs,
-                &self.cloaked_fees,
                 &self.session_id,
                 &self.excl_participants,
                 &self.all_excl_cloaks,
@@ -1780,7 +1764,6 @@ impl Snowball {
         pid: &ParticipantID,
         msgs: &Vec<Vec<u8>>,
         gamma_adj: Fr,
-        fee: Fr,
         data: &ValidationData,
     ) -> bool {
         // accept a list of uncloaked messages that belong to pkey, along with gamma sum of his,
@@ -1814,7 +1797,8 @@ impl Snowball {
             eff_pkey -= cmt_pt;
         }
 
-        let adj_cmt = simple_commit(&gamma_adj, &fee);
+        let fee = (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT;
+        let adj_cmt = simple_commit(&gamma_adj, &Fr::from(fee));
         // check for zero balance condition
         if txin_sum != txout_sum + adj_cmt {
             return false; // user trying to pull a fast one...
@@ -1854,7 +1838,7 @@ impl Snowball {
         // (sheets containing zero fill plus cloaking factors)
         let n_utxos = my_utxos.len();
         let null_msg = Vec::<u8>::new();
-        for _ in n_utxos..MAX_UTXOS {
+        for _ in n_utxos..MAX_SHARING_TXOUTS {
             sheet_id += 1;
             let sheet = dc_encode_sheet(
                 sheet_id,
@@ -1951,6 +1935,7 @@ impl Snowball {
         let payload = SnowballPayload::SharedKeying {
             pkey: sess_pkey.clone(),
             ksig: sess_KSig.clone(),
+            fee: (MAX_SHARING_TXOUTS as i64) * FEE_PER_TXOUT,
         };
         self.send_signed_message(&payload);
     }
@@ -1988,14 +1973,12 @@ impl Snowball {
         &self,
         matrix: &DcMatrix,
         cloaked_gamma_adj: &Fr,
-        cloaked_fee: &Fr,
         cloaks: &HashMap<ParticipantID, Hash>,
     ) {
         // send matrix, sum, and excl_k_cloaks to all participants
         let payload = SnowballPayload::CloakedVals {
             matrix: matrix.clone(),
             gamma_sum: cloaked_gamma_adj.clone(),
-            fee_sum: cloaked_fee.clone(),
             cloaks: cloaks.clone(),
         };
         self.send_signed_message(&payload);
@@ -2082,7 +2065,7 @@ impl Snowball {
 // --------------------------------------------------------------------------
 // helper functions
 
-fn hash_data(matrix: &DcMatrix, cloaked_gamma_adj: &Fr, cloaked_fee: &Fr) -> Hash {
+fn hash_data(matrix: &DcMatrix, cloaked_gamma_adj: &Fr) -> Hash {
     let mut state = Hasher::new();
     "CM".hash(&mut state);
     for sheet in matrix.clone() {
@@ -2093,7 +2076,6 @@ fn hash_data(matrix: &DcMatrix, cloaked_gamma_adj: &Fr, cloaked_fee: &Fr) -> Has
         }
     }
     cloaked_gamma_adj.hash(&mut state);
-    cloaked_fee.hash(&mut state);
     state.result()
 }
 

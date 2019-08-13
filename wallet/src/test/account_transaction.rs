@@ -23,6 +23,7 @@
 
 use super::*;
 use crate::snowball::message::{SnowballMessage, SnowballPayload};
+use crate::snowball::{FEE_PER_TXOUT, MAX_SHARING_TXOUTS};
 use crate::*;
 use assert_matches::assert_matches;
 use futures::Async;
@@ -31,7 +32,7 @@ use std::time::Duration;
 use stegos_crypto::scc::PublicKey;
 use stegos_node::txpool;
 
-const PAYMENT_FEE: i64 = 1_000; // 0.001 STG
+const PAYMENT_FEE: i64 = FEE_PER_TXOUT; // 0.001 STG
 
 #[test]
 fn empty_log_at_start() {
@@ -797,7 +798,7 @@ fn snowball_start(
     let rx = account.account.request(AccountRequest::SecurePayment {
         recipient,
         amount,
-        payment_fee: PAYMENT_FEE,
+        payment_fee: FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64),
         comment: "Test".to_string(),
         locked_timestamp: None,
     });
@@ -815,7 +816,7 @@ fn snowball_start(
 fn create_snowball_tx() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1096,7 +1097,7 @@ fn create_snowball_tx() {
 fn snowball_lock_utxo() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1185,7 +1186,7 @@ fn snowball_lock_utxo() {
 fn snowball_failed_join() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1275,7 +1276,7 @@ fn annihilation() {
 fn snowball_with_wrong_facilitator_pool() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1327,7 +1328,7 @@ fn snowball_with_wrong_facilitator_pool() {
 fn create_snowball_simple() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1446,7 +1447,7 @@ fn create_snowball_simple() {
 fn create_snowball_fail_share_key() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1570,7 +1571,7 @@ fn create_snowball_fail_share_key() {
 fn create_snowball_fail_commitment() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {
@@ -1705,7 +1706,7 @@ fn create_snowball_fail_commitment() {
 fn create_snowball_fail_cloacked_vals() {
     const SEND_TOKENS: i64 = 10;
     // send MINIMAL_TOKEN + FEE
-    const MIN_AMOUNT: i64 = SEND_TOKENS + PAYMENT_FEE;
+    const MIN_AMOUNT: i64 = SEND_TOKENS + FEE_PER_TXOUT * (MAX_SHARING_TXOUTS as i64);
     // set micro_blocks to some big value.
     let config = SandboxConfig {
         chain: ChainConfig {

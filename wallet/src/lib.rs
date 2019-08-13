@@ -417,9 +417,11 @@ impl UnsealedAccountService {
             data,
             locked_timestamp,
             self.last_macro_block_timestamp,
-            snowball::MAX_UTXOS,
+            snowball::MAX_SHARING_TXOUTS,
         )?;
-        assert!(inputs.len() <= snowball::MAX_UTXOS);
+        // NOTE from DM: There is no particular limit to the numnber of TXINS imposed by Snowball.
+        // Only the number of TXOUTS per participant is limited and fixed to MAX_SHARING_TXOUTS
+        // assert!(inputs.len() <= snowball::MAX_SHARING_TXOUTS);
 
         let time = clock::now();
         for (input, _) in &inputs {
