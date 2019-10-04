@@ -49,6 +49,7 @@ tokio-io = "0.1"
 unsigned-varint = { version = "0.2", features = ["codec"]}
 update_rate = "2.0"
 void = "1.0"
+yamux = "0.2"
 
 [build-dependencies]
 stegos_serialization = { version = "0.2.0", path = "../serialization" }
