@@ -36,7 +36,6 @@ use libp2p_tcp as tcp;
 use libp2p_yamux as yamux;
 use log::*;
 use protobuf::Message as ProtoMessage;
-use resolve::{record::Srv, resolver, DnsConfig};
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::error;
@@ -81,43 +80,9 @@ impl Libp2pNetwork {
         network_pkey: pbc::PublicKey,
     ) -> Result<(Network, impl Future<Item = (), Error = ()>), Error> {
         // Resolve network.seed_pool.
-        if config.seed_pool != "" {
-            debug!("Configuring dns to use server from `dns_servers` field.");
-            let dns_cfg = if !config.dns_servers.is_empty() {
-                let mut dns_servers: Vec<SocketAddr> = Vec::new();
-                for server in config.dns_servers.iter() {
-                    if let Ok(socket_addr) = server.parse() {
-                        dns_servers.push(socket_addr)
-                    }
-                }
-                DnsConfig::with_name_servers(dns_servers)
-            } else {
-                DnsConfig::load_default()?
-            };
-
-            debug!("Initialising dns resolver.");
-            let resolver = resolver::DnsResolver::new(dns_cfg)?;
-            // Sic: DNS operations are blocking.
-
-            info!("Resolving seed nodes records.");
-            let rrs: Vec<Srv> = resolver.resolve_record(&config.seed_pool)?;
-            for r in rrs.iter() {
-                let addrs = resolver
-                    .resolve_host(&r.target)
-                    .map_err(|e| format_err!("Failed to resolve seed_pool: {}", e))?;
-                for addr in addrs {
-                    let addr = SocketAddr::new(addr, r.port);
-                    config.seed_nodes.push(addr.to_string());
-                }
-            }
-        }
-
-        debug!("Validating seed_nodes addresses.");
-        // Validate network.seed_nodes.
-        for (i, addr) in config.seed_nodes.iter().enumerate() {
-            SocketAddr::from_str(addr)
-                .map_err(|e| format_err!("Invalid network.seed_nodes[{}] '{}': {}", i, addr, e))?;
-        }
+        config
+            .seed_nodes
+            .extend_from_slice(&resolve_seed_nodes(&config.seed_pool)?);
 
         let (service, control_tx) = new_service(&config, network_skey, network_pkey)?;
         let network = Libp2pNetwork { control_tx };
@@ -807,6 +772,37 @@ impl Transport for CommonTransport {
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         self.inner.inner.dial(addr)
     }
+}
+
+fn resolve_seed_nodes(seed_pool: &str) -> Result<Vec<String>, Error> {
+    use trust_dns_resolver::Resolver;
+
+    let mut seed_nodes = Vec::new();
+    if seed_pool != "" {
+        debug!("Initialising dns resolver.");
+
+        let resolver = Resolver::from_system_conf()?;
+
+        info!("Resolving seed nodes records.");
+        let srv_records = resolver.lookup_srv(seed_pool)?;
+        for srv in srv_records.iter() {
+            let addr_records = resolver
+                .lookup_ip(&srv.target().to_utf8())
+                .map_err(|e| format_err!("Failed to resolve seed_pool: {}", e))?;
+
+            for addr in addr_records.iter() {
+                let addr = SocketAddr::new(addr, srv.port());
+                seed_nodes.push(addr.to_string());
+            }
+        }
+        debug!("Validating seed_nodes addresses = {:?}.", seed_nodes);
+        // Validate network.seed_nodes.
+        for (i, addr) in seed_nodes.iter().enumerate() {
+            SocketAddr::from_str(addr)
+                .map_err(|e| format_err!("Invalid network.seed_nodes[{}] '{}': {}", i, addr, e))?;
+        }
+    }
+    Ok(seed_nodes)
 }
 
 #[cfg(test)]
